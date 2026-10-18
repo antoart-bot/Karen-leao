@@ -3,7 +3,8 @@ import {
     get,
     update,
     remove,
-    onValue
+    onValue,
+    push
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-database.js";
 
 import {
@@ -84,6 +85,20 @@ const gerarHorarios =
 
 const nomeBarbearia =
     document.getElementById("nomeBarbearia");
+
+const formCategoria = document.getElementById("formCategoria");
+const nomeCategoria = document.getElementById("nomeCategoria");
+const salvarCategoria = document.getElementById("salvarCategoria");
+const formServico = document.getElementById("formServico");
+const categoriaServico = document.getElementById("categoriaServico");
+const nomeServico = document.getElementById("nomeServico");
+const precoServico = document.getElementById("precoServico");
+const duracaoServico = document.getElementById("duracaoServico");
+const descricaoServico = document.getElementById("descricaoServico");
+const detalhesServico = document.getElementById("detalhesServico");
+const salvarServico = document.getElementById("salvarServico");
+const listaServicos = document.getElementById("listaServicos");
+const mensagemServicos = document.getElementById("mensagemServicos");
 
 
 // =========================================================
@@ -308,6 +323,513 @@ async function prepararNotificacoes() {
 
 
 // =========================================================
+// CATEGORIAS E PROCEDIMENTOS
+// =========================================================
+
+let categoriasServicos = {};
+let itensServicos = {};
+
+const caminhoCategorias = () => `${CAMINHO_BARBEIRO}/servicos/categorias`;
+const caminhoItensServicos = () => `${CAMINHO_BARBEIRO}/servicos/itens`;
+
+function normalizarTexto(valor) {
+    return String(valor || "").trim().toLocaleLowerCase("pt-BR");
+}
+
+function formatarPrecoServico(preco) {
+    if (preco === null || preco === undefined || preco === "") return "Após avaliação";
+    return Number(preco).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+function formatarDuracaoServico(minutos) {
+    const total = Number(minutos);
+    if (!Number.isFinite(total) || total <= 0) return "Definida na avaliação";
+    const horas = Math.floor(total / 60);
+    const resto = total % 60;
+    if (horas && resto) return `${horas}h ${resto}min`;
+    if (horas) return `${horas} ${horas === 1 ? "hora" : "horas"}`;
+    return `${resto} minutos`;
+}
+
+function mostrarMensagemServicos(texto, erro = false) {
+    if (!mensagemServicos) return;
+    mensagemServicos.textContent = texto;
+    mensagemServicos.classList.toggle("mensagem-erro", erro);
+}
+
+function gerarValorServico(nome) {
+    const base = normalizarTexto(nome)
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") || "procedimento";
+    return `${base}_${Date.now().toString(36)}`;
+}
+
+async function importarProcedimentosAntigos() {
+    // Só importa a configuração local para o estabelecimento deste próprio site.
+    // Não copia procedimentos da Karen para outros clientes do Firebase.
+    if (CAMINHO_BARBEIRO !== `barbeiros/${CONFIG.id}` || !Array.isArray(CONFIG.servicos)) return;
+
+    const categoriasPorNome = new Map(
+        Object.entries(categoriasServicos).map(([id, item]) => [normalizarTexto(item?.nome), id])
+    );
+
+    for (const antigo of CONFIG.servicos) {
+        const nomeCategoria = String(antigo.categoria || "Procedimentos").trim();
+        const chaveCategoria = normalizarTexto(nomeCategoria);
+        let categoriaId = categoriasPorNome.get(chaveCategoria);
+
+        if (!categoriaId) {
+            const novaCategoria = push(ref(db, caminhoCategorias()));
+            await update(novaCategoria, { nome: nomeCategoria, criadoEm: new Date().toISOString() });
+            categoriaId = novaCategoria.key;
+            categoriasServicos[categoriaId] = { nome: nomeCategoria };
+            categoriasPorNome.set(chaveCategoria, categoriaId);
+        }
+
+        const valorAntigo = String(antigo.valor || "");
+        const jaExiste = Object.values(itensServicos).some(item =>
+            item && ((valorAntigo && item.valor === valorAntigo) || normalizarTexto(item.nome) === normalizarTexto(antigo.nome))
+        );
+        if (jaExiste) continue;
+
+        const novoServico = push(ref(db, caminhoItensServicos()));
+        const registro = {
+            nome: antigo.nome,
+            preco: antigo.preco ?? null,
+            categoriaId,
+            valor: valorAntigo || gerarValorServico(antigo.nome),
+            minutos: Number.isFinite(Number(antigo.minutos)) && antigo.minutos !== null ? Number(antigo.minutos) : null,
+            duracao: antigo.duracao || "Definida na avaliação",
+            descricao: antigo.descricao || "",
+            detalhes: Array.isArray(antigo.detalhes) ? antigo.detalhes : [],
+            criadoEm: new Date().toISOString()
+        };
+        await update(novoServico, registro);
+        itensServicos[novoServico.key] = registro;
+    }
+}
+
+function atualizarSeletorCategorias() {
+    if (!categoriaServico) return;
+    const valorAnterior = categoriaServico.value;
+    categoriaServico.replaceChildren();
+    const inicial = document.createElement("option");
+    inicial.value = "";
+    inicial.textContent = "Selecione uma categoria";
+    categoriaServico.appendChild(inicial);
+
+    Object.entries(categoriasServicos)
+        .filter(([, categoria]) => categoria && categoria.nome)
+        .sort((a, b) => String(a[1].nome).localeCompare(String(b[1].nome), "pt-BR"))
+        .forEach(([id, categoria]) => {
+            const option = document.createElement("option");
+            option.value = id;
+            option.textContent = categoria.nome;
+            categoriaServico.appendChild(option);
+        });
+
+    if (valorAnterior && categoriasServicos[valorAnterior]) categoriaServico.value = valorAnterior;
+    if (salvarServico) salvarServico.disabled = Object.keys(categoriasServicos).length === 0;
+}
+
+function criarElementoServico(tag, classe, texto) {
+    const elemento = document.createElement(tag);
+    if (classe) elemento.className = classe;
+    if (texto !== undefined) elemento.textContent = texto;
+    return elemento;
+}
+
+function renderizarServicos() {
+    if (!listaServicos) return;
+    listaServicos.replaceChildren();
+
+    const categorias = Object.entries(categoriasServicos)
+        .filter(([, categoria]) => categoria && categoria.nome)
+        .map(([id, categoria]) => ({ id, nome: categoria.nome }));
+
+    if (!categorias.length) {
+        listaServicos.appendChild(criarElementoServico("p", "vazio", "Nenhuma categoria cadastrada."));
+        return;
+    }
+
+    categorias.sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+    categorias.forEach(categoria => {
+        const grupo = criarElementoServico("section", "grupo-servicos-painel");
+        const topo = criarElementoServico("div", "topo-grupo-servicos");
+        topo.appendChild(criarElementoServico("h3", "", categoria.nome));
+        const editarCategoria = criarElementoServico("button", "botao-secundario", "Renomear");
+        editarCategoria.type = "button";
+        editarCategoria.addEventListener("click", () => editarCategoriaPainel(categoria.id));
+        const excluirCategoria = criarElementoServico("button", "botao-secundario", "Excluir categoria");
+        excluirCategoria.type = "button";
+        excluirCategoria.addEventListener("click", () => excluirCategoriaPainel(categoria.id));
+        const acoesCategoria = criarElementoServico("div", "acoes-servicos-painel");
+        acoesCategoria.append(editarCategoria, excluirCategoria);
+        topo.appendChild(acoesCategoria);
+        grupo.appendChild(topo);
+
+        const servicos = Object.entries(itensServicos)
+            .filter(([, item]) => item && item.categoriaId === categoria.id)
+            .sort((a, b) => String(a[1].nome || "").localeCompare(String(b[1].nome || ""), "pt-BR"));
+
+        if (!servicos.length) grupo.appendChild(criarElementoServico("p", "texto-vazio-servicos", "Nenhum procedimento nesta categoria."));
+
+        servicos.forEach(([id, item]) => {
+            const card = criarElementoServico("article", "procedimento-painel");
+            const conteudo = criarElementoServico("div", "procedimento-painel-conteudo");
+            conteudo.appendChild(criarElementoServico("h4", "", item.nome || "Sem nome"));
+            conteudo.appendChild(criarElementoServico("p", "procedimento-meta", `${formatarPrecoServico(item.preco)} · ${formatarDuracaoServico(item.minutos)}`));
+            if (item.descricao) conteudo.appendChild(criarElementoServico("p", "procedimento-descricao-painel", item.descricao));
+            if (Array.isArray(item.detalhes) && item.detalhes.length) {
+                const lista = document.createElement("ul");
+                item.detalhes.forEach(detalhe => lista.appendChild(criarElementoServico("li", "", detalhe)));
+                conteudo.appendChild(lista);
+            }
+            card.appendChild(conteudo);
+            const acoes = criarElementoServico("div", "acoes-servicos-painel");
+            const editar = criarElementoServico("button", "botao-secundario", "Editar");
+            editar.type = "button";
+            editar.addEventListener("click", () => editarProcedimentoPainel(id));
+            const excluir = criarElementoServico("button", "botao-secundario", "Excluir");
+            excluir.type = "button";
+            excluir.addEventListener("click", () => excluirProcedimentoPainel(id));
+            acoes.append(editar, excluir);
+            card.appendChild(acoes);
+            grupo.appendChild(card);
+        });
+        listaServicos.appendChild(grupo);
+    });
+}
+
+async function carregarServicosPainel() {
+    if (!CAMINHO_BARBEIRO || !listaServicos) return;
+    listaServicos.textContent = "Carregando procedimentos...";
+    try {
+        const [categoriasSnap, itensSnap] = await Promise.all([
+            get(ref(db, caminhoCategorias())),
+            get(ref(db, caminhoItensServicos()))
+        ]);
+        categoriasServicos = categoriasSnap.exists() ? categoriasSnap.val() : {};
+        itensServicos = itensSnap.exists() ? itensSnap.val() : {};
+
+        await importarProcedimentosAntigos();
+        atualizarSeletorCategorias();
+        renderizarServicos();
+    } catch (erro) {
+        console.error("Erro ao carregar procedimentos:", erro);
+        listaServicos.textContent = "Não foi possível carregar os procedimentos.";
+        mostrarMensagemServicos("Confira a conexão e as permissões do Firebase.", true);
+    }
+}
+
+if (formCategoria) formCategoria.addEventListener("submit", async evento => {
+    evento.preventDefault();
+    const nome = nomeCategoria.value.trim();
+    if (!nome) return mostrarMensagemServicos("Digite o nome da categoria.", true);
+    if (Object.values(categoriasServicos).some(item => normalizarTexto(item?.nome) === normalizarTexto(nome))) {
+        return mostrarMensagemServicos("Essa categoria já existe.", true);
+    }
+    salvarCategoria.disabled = true;
+    try {
+        await update(push(ref(db, caminhoCategorias())), { nome, criadoEm: new Date().toISOString() });
+        formCategoria.reset();
+        mostrarMensagemServicos("Categoria adicionada.");
+        await carregarServicosPainel();
+    } catch (erro) {
+        console.error(erro);
+        mostrarMensagemServicos("Não foi possível salvar a categoria. Verifique as permissões.", true);
+    } finally { salvarCategoria.disabled = false; }
+});
+
+if (formServico) formServico.addEventListener("submit", async evento => {
+    evento.preventDefault();
+    const categoriaId = categoriaServico.value;
+    const nome = nomeServico.value.trim();
+    const precoTexto = precoServico.value.trim();
+    const duracaoTexto = duracaoServico.value.trim();
+    const descricao = descricaoServico.value.trim();
+    const detalhes = detalhesServico.value.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    const preco = precoTexto === "" ? null : Number(precoTexto);
+    const minutos = duracaoTexto === "" ? null : Number(duracaoTexto);
+
+    if (!categoriasServicos[categoriaId]) return mostrarMensagemServicos("Selecione uma categoria válida.", true);
+    if (!nome) return mostrarMensagemServicos("Informe o nome do procedimento.", true);
+    if (preco !== null && (!Number.isFinite(preco) || preco < 0 || preco > 99999)) return mostrarMensagemServicos("Informe um preço válido.", true);
+    if (minutos !== null && (!Number.isInteger(minutos) || minutos < 1 || minutos > 1440)) return mostrarMensagemServicos("A duração deve ser de 1 a 1440 minutos.", true);
+
+    salvarServico.disabled = true;
+    try {
+        const registro = {
+            nome, preco, minutos,
+            duracao: formatarDuracaoServico(minutos),
+            descricao, detalhes, categoriaId,
+            valor: gerarValorServico(nome),
+            criadoEm: new Date().toISOString()
+        };
+        await update(push(ref(db, caminhoItensServicos())), registro);
+        formServico.reset();
+        mostrarMensagemServicos("Procedimento adicionado e publicado no catálogo.");
+        await carregarServicosPainel();
+    } catch (erro) {
+        console.error(erro);
+        mostrarMensagemServicos("Não foi possível salvar o procedimento. Verifique as permissões.", true);
+    } finally { salvarServico.disabled = false; }
+});
+
+async function editarCategoriaPainel(id) {
+    const atual = categoriasServicos[id];
+    if (!atual) return;
+    const resposta = prompt("Nome da categoria:", atual.nome || "");
+    if (resposta === null) return;
+    const nome = resposta.trim();
+    if (!nome) return mostrarMensagemServicos("O nome não pode ficar vazio.", true);
+    if (Object.entries(categoriasServicos).some(([outroId, item]) => outroId !== id && normalizarTexto(item?.nome) === normalizarTexto(nome))) return mostrarMensagemServicos("Já existe uma categoria com esse nome.", true);
+    try {
+        await update(ref(db, `${caminhoCategorias()}/${id}`), { nome });
+        mostrarMensagemServicos("Categoria atualizada.");
+        await carregarServicosPainel();
+    } catch (erro) { console.error(erro); mostrarMensagemServicos("Não foi possível editar a categoria.", true); }
+}
+
+async function excluirCategoriaPainel(id) {
+    const categoria = categoriasServicos[id];
+    if (!categoria) return;
+    if (Object.values(itensServicos).some(item => item?.categoriaId === id)) return mostrarMensagemServicos("Mova ou exclua os procedimentos antes de remover a categoria.", true);
+    if (!confirm(`Excluir a categoria \"${categoria.nome}\"?`)) return;
+    try {
+        await remove(ref(db, `${caminhoCategorias()}/${id}`));
+        mostrarMensagemServicos("Categoria excluída.");
+        await carregarServicosPainel();
+    } catch (erro) { console.error(erro); mostrarMensagemServicos("Não foi possível excluir a categoria.", true); }
+}
+
+
+let procedimentoEditandoId = null;
+
+function abrirModalProcedimento() {
+    const modal = document.getElementById("modalEditarProcedimento");
+    if (!modal) return;
+
+    modal.hidden = false;
+    document.body.classList.add("modal-procedimento-aberto");
+
+    requestAnimationFrame(() => {
+        document.getElementById("editarNomeProcedimento")?.focus();
+    });
+}
+
+function fecharModalProcedimento() {
+    const modal = document.getElementById("modalEditarProcedimento");
+    if (!modal) return;
+
+    modal.hidden = true;
+    document.body.classList.remove("modal-procedimento-aberto");
+    procedimentoEditandoId = null;
+}
+
+async function editarProcedimentoPainel(id) {
+    const item = itensServicos[id];
+    if (!item) return;
+
+    const modal = document.getElementById("modalEditarProcedimento");
+    const seletorCategoria = document.getElementById("editarCategoriaProcedimento");
+
+    if (!modal || !seletorCategoria) {
+        mostrarMensagemServicos(
+            "A janela de edição não foi encontrada. Confira o HTML do painel.",
+            true
+        );
+        return;
+    }
+
+    procedimentoEditandoId = id;
+
+    document.getElementById("editarNomeProcedimento").value =
+        item.nome || "";
+
+    document.getElementById("editarPrecoProcedimento").value =
+        item.preco === null || item.preco === undefined
+            ? ""
+            : String(item.preco);
+
+    document.getElementById("editarDuracaoProcedimento").value =
+        item.minutos === null || item.minutos === undefined
+            ? ""
+            : String(item.minutos);
+
+    document.getElementById("editarDescricaoProcedimento").value =
+        item.descricao || "";
+
+    document.getElementById("editarDetalhesProcedimento").value =
+        Array.isArray(item.detalhes)
+            ? item.detalhes.join("\n")
+            : "";
+
+    seletorCategoria.replaceChildren();
+
+    Object.entries(categoriasServicos)
+        .filter(([, categoria]) => categoria && categoria.nome)
+        .sort((a, b) =>
+            String(a[1].nome).localeCompare(
+                String(b[1].nome),
+                "pt-BR"
+            )
+        )
+        .forEach(([categoriaId, categoria]) => {
+            const opcao = document.createElement("option");
+            opcao.value = categoriaId;
+            opcao.textContent = categoria.nome;
+            seletorCategoria.appendChild(opcao);
+        });
+
+    if (categoriasServicos[item.categoriaId]) {
+        seletorCategoria.value = item.categoriaId;
+    }
+
+    abrirModalProcedimento();
+}
+
+
+// Salvar todas as alterações do procedimento.
+const formEditarProcedimento =
+    document.getElementById("formEditarProcedimento");
+
+if (formEditarProcedimento) {
+    formEditarProcedimento.addEventListener("submit", async evento => {
+        evento.preventDefault();
+
+        const id = procedimentoEditandoId;
+        if (!id || !itensServicos[id]) return;
+
+        const nome =
+            document.getElementById("editarNomeProcedimento").value.trim();
+
+        const categoriaId =
+            document.getElementById("editarCategoriaProcedimento").value;
+
+        const precoTexto =
+            document.getElementById("editarPrecoProcedimento").value.trim();
+
+        const duracaoTexto =
+            document.getElementById("editarDuracaoProcedimento").value.trim();
+
+        const descricao =
+            document.getElementById("editarDescricaoProcedimento").value.trim();
+
+        const detalhes =
+            document.getElementById("editarDetalhesProcedimento").value
+                .split(/\r?\n/)
+                .map(texto => texto.trim())
+                .filter(Boolean);
+
+        const preco = precoTexto === "" ? null : Number(precoTexto);
+        const minutos = duracaoTexto === "" ? null : Number(duracaoTexto);
+
+        if (!nome) {
+            mostrarMensagemServicos("Informe o nome do procedimento.", true);
+            document.getElementById("editarNomeProcedimento").focus();
+            return;
+        }
+
+        if (!categoriasServicos[categoriaId]) {
+            mostrarMensagemServicos("Selecione uma categoria válida.", true);
+            return;
+        }
+
+        if (
+            preco !== null &&
+            (!Number.isFinite(preco) || preco < 0 || preco > 99999)
+        ) {
+            mostrarMensagemServicos("Informe um preço válido.", true);
+            return;
+        }
+
+        if (
+            minutos !== null &&
+            (!Number.isInteger(minutos) || minutos < 1 || minutos > 1440)
+        ) {
+            mostrarMensagemServicos(
+                "A duração deve ser de 1 a 1440 minutos.",
+                true
+            );
+            return;
+        }
+
+        const botaoSalvar =
+            document.getElementById("salvarEdicaoProcedimento");
+
+        botaoSalvar.disabled = true;
+        botaoSalvar.textContent = "Salvando...";
+
+        try {
+            await update(ref(db, `${caminhoItensServicos()}/${id}`), {
+                nome,
+                categoriaId,
+                preco,
+                minutos,
+                duracao: formatarDuracaoServico(minutos),
+                descricao,
+                detalhes,
+                valor: gerarValorServico(nome)
+            });
+
+            fecharModalProcedimento();
+
+            mostrarMensagemServicos(
+                "Procedimento atualizado com sucesso."
+            );
+
+            await carregarServicosPainel();
+
+        } catch (erro) {
+            console.error("Erro ao editar procedimento:", erro);
+
+            mostrarMensagemServicos(
+                "Não foi possível salvar. Confira a conexão e as permissões do Firebase.",
+                true
+            );
+        } finally {
+            botaoSalvar.disabled = false;
+            botaoSalvar.textContent = "Salvar alterações";
+        }
+    });
+}
+
+
+// Fechar pelos botões e clicando fora da janela.
+document.getElementById("fecharModalProcedimento")
+    ?.addEventListener("click", fecharModalProcedimento);
+
+document.getElementById("cancelarEdicaoProcedimento")
+    ?.addEventListener("click", fecharModalProcedimento);
+
+document.querySelector("#modalEditarProcedimento [data-fechar-modal]")
+    ?.addEventListener("click", fecharModalProcedimento);
+
+
+// Fechar com a tecla Esc.
+document.addEventListener("keydown", evento => {
+    if (
+        evento.key === "Escape" &&
+        !document.getElementById("modalEditarProcedimento")?.hidden
+    ) {
+        fecharModalProcedimento();
+    }
+});
+
+
+async function excluirProcedimentoPainel(id) {
+    const item = itensServicos[id];
+    if (!item || !confirm(`Excluir o procedimento \"${item.nome}\"?`)) return;
+    try {
+        await remove(ref(db, `${caminhoItensServicos()}/${id}`));
+        mostrarMensagemServicos("Procedimento excluído.");
+        await carregarServicosPainel();
+    } catch (erro) { console.error(erro); mostrarMensagemServicos("Não foi possível excluir o procedimento.", true); }
+}
+
+
+// =========================================================
 // AUTENTICAÇÃO
 // =========================================================
 
@@ -363,6 +885,8 @@ onAuthStateChanged(
             await carregarConfiguracaoCliente();
 
             aplicarConfiguracaoCliente();
+
+            await carregarServicosPainel();
 
 
             // Preparar notificações

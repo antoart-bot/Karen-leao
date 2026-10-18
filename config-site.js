@@ -34,78 +34,61 @@ function descobrirCliente() {
 // ========================================
 
 async function carregarConfiguracao() {
-
-    const clienteId =
-        descobrirCliente();
-
-    console.log(
-        "CLIENTE DO SITE:",
-        clienteId
-    );
-
-    const caminho =
-        `barbeiros/${clienteId}/configuracoes`;
+    const clienteId = descobrirCliente();
+    console.log("CLIENTE DO SITE:", clienteId);
+    const caminho = `barbeiros/${clienteId}`;
 
     try {
+        const [configSnap, categoriasSnap, itensSnap] = await Promise.all([
+            get(ref(db, `${caminho}/configuracoes`)),
+            get(ref(db, `${caminho}/servicos/categorias`)),
+            get(ref(db, `${caminho}/servicos/itens`))
+        ]);
 
-        const snapshot =
-            await get(
-                ref(
-                    db,
-                    caminho
-                )
-            );
+        const configuracaoFirebase = configSnap.exists() ? configSnap.val() : {};
+        const categorias = categoriasSnap.exists() ? categoriasSnap.val() : {};
+        const itens = itensSnap.exists() ? itensSnap.val() : {};
+        const servicosFirebase = Object.entries(itens)
+            .filter(([, item]) => item && item.nome)
+            .map(([id, item]) => ({
+                ...item,
+                id,
+                categoria: categorias[item.categoriaId]?.nome || item.categoria || "Procedimentos",
+                valor: item.valor || id,
+                duracao: item.duracao || (item.minutos ? formatarDuracaoPublica(item.minutos) : "Definida na avaliação"),
+                minutos: item.minutos === undefined ? null : item.minutos,
+                descricao: item.descricao || "",
+                detalhes: Array.isArray(item.detalhes) ? item.detalhes : []
+            }));
 
-        if (!snapshot.exists()) {
-
-            console.warn(
-                "Configuração do cliente não encontrada. Usando CONFIG padrão."
-            );
-
-            return {
-                ...CONFIG
-            };
-        }
-
-        const configuracaoFirebase =
-            snapshot.val();
-
-        console.log(
-            "CONFIGURAÇÃO DO SITE:",
-            configuracaoFirebase
-        );
-
-        console.log(
-            "NOME RECEBIDO DO FIREBASE:",
-            configuracaoFirebase.nome
-        );
-
-        console.log(
-            "CHAVES RECEBIDAS:",
-            Object.keys(configuracaoFirebase)
-        );
+        const servicos = servicosFirebase.length ? servicosFirebase : (clienteId === CONFIG.id ? CONFIG.servicos : []);
+        console.log("CONFIGURAÇÃO DO SITE:", configuracaoFirebase);
+        console.log("PROCEDIMENTOS CARREGADOS:", servicos.length);
 
         return {
             ...CONFIG,
             ...configuracaoFirebase,
-            // Os procedimentos desta versão do site são definidos em config.js.
-            servicos: CONFIG.servicos,
+            servicos,
             cores: CONFIG.cores
         };
-
     } catch (erro) {
-
-        console.error(
-            "Erro ao carregar configuração:",
-            erro
-        );
-
+        console.error("Erro ao carregar configuração:", erro);
         return {
-            ...CONFIG
+            ...CONFIG,
+            servicos: clienteId === CONFIG.id ? CONFIG.servicos : []
         };
     }
 }
 
+function formatarDuracaoPublica(minutos) {
+    const total = Number(minutos);
+    if (!Number.isFinite(total) || total <= 0) return "Definida na avaliação";
+    const horas = Math.floor(total / 60);
+    const resto = total % 60;
+    if (horas && resto) return `${horas}h ${resto}min`;
+    if (horas) return `${horas} ${horas === 1 ? "hora" : "horas"}`;
+    return `${resto} minutos`;
+}
 
 // ========================================
 // FUNÇÃO AUXILIAR

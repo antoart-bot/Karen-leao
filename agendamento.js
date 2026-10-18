@@ -100,21 +100,8 @@ async function carregarConfiguracaoCliente() {
             );
 
         if (snapshot.exists()) {
-            const dados =
-                snapshot.val();
-
-            CONFIG_CLIENTE = {
-                ...CONFIG,
-                ...dados,
-                // Mantém os procedimentos detalhados deste site.
-                servicos: CONFIG.servicos,
-                cores: CONFIG.cores
-            };
-
-            console.log(
-                "CONFIGURAÇÃO DO AGENDAMENTO:",
-                CONFIG_CLIENTE
-            );
+            const dados = snapshot.val();
+            CONFIG_CLIENTE = { ...CONFIG, ...dados, cores: CONFIG.cores };
         } else {
             console.warn(
                 "Configuração do cliente não encontrada. Usando CONFIG padrão."
@@ -134,6 +121,38 @@ async function carregarConfiguracaoCliente() {
             ...CONFIG
         };
     }
+
+    // Usa a lista gerenciada no painel. Se ainda não houver registros, mantém o catálogo antigo.
+    try {
+        const [categoriasSnap, itensSnap] = await Promise.all([
+            get(ref(db, `${CAMINHO_BARBEIRO}/servicos/categorias`)),
+            get(ref(db, `${CAMINHO_BARBEIRO}/servicos/itens`))
+        ]);
+        const categorias = categoriasSnap.exists() ? categoriasSnap.val() : {};
+        const itens = itensSnap.exists() ? itensSnap.val() : {};
+        const servicosFirebase = Object.entries(itens)
+            .filter(([, item]) => item && item.nome)
+            .map(([id, item]) => ({
+                ...item,
+                id,
+                valor: item.valor || id,
+                categoria: categorias[item.categoriaId]?.nome || item.categoria || "Procedimentos",
+                duracao: item.duracao || (item.minutos ? `${item.minutos} minutos` : "Definida na avaliação"),
+                minutos: item.minutos === undefined ? null : item.minutos,
+                detalhes: Array.isArray(item.detalhes) ? item.detalhes : []
+            }));
+        if (servicosFirebase.length) {
+            CONFIG_CLIENTE.servicos = servicosFirebase;
+        } else if (clienteId === CONFIG.id) {
+            CONFIG_CLIENTE.servicos = CONFIG.servicos;
+        } else if (!Array.isArray(dados?.servicos)) {
+            CONFIG_CLIENTE.servicos = [];
+        }
+    } catch (erroServicos) {
+        console.warn("Não foi possível carregar os procedimentos do Firebase; usando configuração local.", erroServicos);
+        if (clienteId !== CONFIG.id && CONFIG_CLIENTE.servicos === CONFIG.servicos) CONFIG_CLIENTE.servicos = [];
+    }
+
 }
 
 
